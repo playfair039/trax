@@ -1,4 +1,4 @@
-name: KinD Cluster Setup
+name: CI Load Test
 
 on:
   push:
@@ -7,16 +7,12 @@ on:
   pull_request:
 
 jobs:
-  kind-cluster:
+  ci-load-test:
     runs-on: ubuntu-22.04
 
     steps:
       - name: Check out the repository
         uses: actions/checkout@v3
-
-      # Install Docker (Docker is typically pre-installed on GitHub runners, but we ensure it’s set up properly)
-      - name: Set up Docker
-        uses: docker/setup-buildx-action@v2
 
       - name: Install KinD
         run: |
@@ -24,18 +20,161 @@ jobs:
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 
-      - name: Create KinD cluster
-        run: kind create cluster --name my-cluster
+      - name: Configure Multi-Node KinD Cluster
+        run: |
+          cat <<EOF > kind-config.yaml
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+            - role: control-plane
+            - role: worker
+            - role: worker
+          EOF
+
+      - name: Create Multi-Node KinD Cluster
+        run: kind create cluster --name test-cluster --config kind-config.yaml
 
       - name: Verify Cluster Nodes
         run: kubectl get nodes
 
-      - name: Run tests
+      - name: Deploy NGINX Ingress Controller
         run: |
-          kubectl apply -f k8s/test-deployment.yaml
-          kubectl get pods -A
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+          kubectl wait --namespace ingress-nginx \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/component=controller \
+            --timeout=120s
 
-      - name: Delete KinD cluster
+      - name: Deploy HTTP Echo Services
+        run: |
+          # Create 'foo' deployment
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: http-echo-foo
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: http-echo-foo
+            template:
+              metadata:
+                labels:
+                  app: http-echo-foo
+              spec:
+                containers:
+                - name: http-echo
+                  image: hashicorp/http-echo:0.2.3
+                  args:
+                  - "-text=foo"
+                  ports:
+                  - containerPort: 5678
+          EOF
+
+          # Expose 'foo' deployment as a service
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: http-echo-foo-service
+          spec:
+            selector:
+              app: http-echo-foo
+            ports:
+              - protocol: TCP
+                port: 80
+                targetPort: 5678
+          EOF
+
+          # Create 'bar' deployment
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: http-echo-bar
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: http-echo-bar
+            template:
+              metadata:
+                labels:
+                  app: http-echo-bar
+              spec:
+                containers:
+                - name: http-echo
+                  image: hashicorp/http-echo:0.2.3
+                  args:
+                  - "-text=bar"
+                  ports:
+                  - containerPort: 5678
+          EOF
+
+          # Expose 'bar' deployment as a service
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: http-echo-bar-service
+          spec:
+            selector:
+              app: http-echo-bar
+            ports:
+              - protocol: TCP
+                port: 80
+                targetPort: 5678
+          EOF
+
+      - name: Configure Ingress Routing for foo.localhost and bar.localhost
+        run: |
+          # Ingress resource for foo.localhost
+          cat <<EOF | kubectl apply -f -
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: foo-ingress
+            namespace: default
+            annotations:
+              nginx.ingress.kubernetes.io/rewrite-target: /
+          spec:
+            rules:
+            - host: foo.localhost
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: http-echo-foo-service
+                      port:
+                        number: 80
+          EOF
+
+          # Ingress resource for bar.localhost
+          cat <<EOF | kubectl apply -f -
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: bar-ingress
+            namespace: default
+            annotations:
+              nginx.ingress.kubernetes.io/rewrite-target: /
+          spec:
+            rules:
+            - host: bar.localhost
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: http-echo-bar-service
+                      port:
+                        number: 80
+          EOF
+
+      - name: Delete KinD Cluster
         if: always()
-        run: kind delete cluster --name my-cluster
-
+        run: kind delete cluster --name test-cluster
