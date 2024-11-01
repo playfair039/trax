@@ -1,0 +1,41 @@
+name: KinD Cluster Setup
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  kind-cluster:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v3
+
+      # Install Docker (Docker is typically pre-installed on GitHub runners, but we ensure it’s set up properly)
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v2
+
+      - name: Install KinD
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Create KinD cluster
+        run: kind create cluster --name my-cluster
+
+      - name: Verify Cluster Nodes
+        run: kubectl get nodes
+
+      - name: Run tests
+        run: |
+          kubectl apply -f k8s/test-deployment.yaml
+          kubectl get pods -A
+
+      - name: Delete KinD cluster
+        if: always()
+        run: kind delete cluster --name my-cluster
+
