@@ -45,7 +45,6 @@ jobs:
             --selector=app.kubernetes.io/component=controller \
             --timeout=300s
 
-
       - name: Deploy HTTP Echo Services
         run: |
           # Create 'foo' deployment
@@ -175,6 +174,28 @@ jobs:
                       port:
                         number: 80
           EOF
+
+      - name: Install Hey for Load Testing
+        run: |
+          curl -Lo hey https://hey-release.s3.us-east-2.amazonaws.com/hey_linux_amd64
+          chmod +x hey
+          sudo mv hey /usr/local/bin/hey
+
+      - name: Generate Load Test and Capture Results
+        run: |
+          # Run load tests for foo.localhost and bar.localhost
+          echo "Running load test for foo.localhost"
+          hey -z 30s -q 10 -host foo.localhost http://localhost > foo_load_test.txt
+          
+          echo "Running load test for bar.localhost"
+          hey -z 30s -q 10 -host bar.localhost http://localhost > bar_load_test.txt
+          
+          # Output results
+          echo "Results for foo.localhost"
+          cat foo_load_test.txt
+          
+          echo "Results for bar.localhost"
+          cat bar_load_test.txt
 
       - name: Delete KinD Cluster
         if: always()
