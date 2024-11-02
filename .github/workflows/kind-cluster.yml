@@ -1,10 +1,9 @@
 name: CI Load Test
 
 on:
-  push:
+  pull_request:
     branches:
       - main
-  pull_request:
 
 jobs:
   ci-load-test:
@@ -183,19 +182,39 @@ jobs:
 
       - name: Generate Load Test and Capture Results
         run: |
-          # Run load tests for foo.localhost and bar.localhost
-          echo "Running load test for foo.localhost"
           hey -z 30s -q 10 -host foo.localhost http://localhost > foo_load_test.txt
-          
-          echo "Running load test for bar.localhost"
           hey -z 30s -q 10 -host bar.localhost http://localhost > bar_load_test.txt
-          
-          # Output results
-          echo "Results for foo.localhost"
-          cat foo_load_test.txt
-          
-          echo "Results for bar.localhost"
-          cat bar_load_test.txt
+
+      - name: Parse Load Test Results
+        id: parse_results
+        run: |
+          parse_results() {
+            echo "Results for $1"
+            avg_latency=$(grep 'Latency' $1 | awk '{print $2}')
+            requests_sec=$(grep 'Requests/sec' $1 | awk '{print $2}')
+            percent_90=$(grep '90%' $1 | awk '{print $2}')
+            percent_95=$(grep '95%' $1 | awk '{print $2}')
+            total_requests=$(grep 'Requests' $1 | awk '{print $3}')
+            failed_requests=$(grep 'Failed' $1 | awk '{print $2}')
+            failed_percent=$(echo "scale=2; $failed_requests/$total_requests*100" | bc)
+            echo "Average Latency: $avg_latency"
+            echo "Requests/sec: $requests_sec"
+            echo "90th Percentile Latency: $percent_90"
+            echo "95th Percentile Latency: $percent_95"
+            echo "Failed Requests: $failed_requests ($failed_percent%)"
+          }
+          parse_results foo_load_test.txt > parsed_foo.txt
+          parse_results bar_load_test.txt > parsed_bar.txt
+          echo "Parsed load test results saved."
+
+      - name: Comment Load Testing Results on PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pr_comment="### Load Testing Results\n\n"
+          pr_comment+="#### foo.localhost:\n\n\`\`\`\n$(cat parsed_foo.txt)\n\`\`\`\n\n"
+          pr_comment+="#### bar.localhost:\n\n\`\`\`\n$(cat parsed_bar.txt)\n\`\`\`\n\n"
+          echo "$pr_comment" | gh pr comment ${{ github.event.pull_request.number }} --body -
 
       - name: Delete KinD Cluster
         if: always()
