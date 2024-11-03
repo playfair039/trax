@@ -13,7 +13,7 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@v3
 
-      - name: Install KinD
+      - name: Install kinD
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
           chmod +x ./kind
@@ -25,7 +25,7 @@ jobs:
           chmod +x ./kubectl
           sudo mv ./kubectl /usr/local/bin/kubectl
 
-      - name: Configure Multi-Node KinD Cluster
+      - name: Configure cluster
         run: |
           cat <<EOF > kind-config.yaml
           kind: Cluster
@@ -49,13 +49,13 @@ jobs:
             - role: worker
           EOF
 
-      - name: Create Multi-Node KinD Cluster
+      - name: Create cluster
         run: kind create cluster --name test-cluster --config kind-config.yaml
 
-      - name: Verify Cluster Nodes
+      - name: Verify cluster nodes
         run: kubectl get nodes
 
-      - name: Deploy NGINX Ingress Controller
+      - name: Deploy nginx ingress controller
         run: |
           kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.1/deploy/static/provider/kind/deploy.yaml
           kubectl wait --namespace ingress-nginx \
@@ -63,7 +63,7 @@ jobs:
             --selector=app.kubernetes.io/component=controller \
             --timeout=600s
 
-      - name: Deploy HTTP Echo Services
+      - name: Deploy HTTP echo services
         run: |
           cat <<EOF | kubectl apply -f -
           apiVersion: apps/v1
@@ -136,7 +136,7 @@ jobs:
                 targetPort: 5678
           EOF
 
-      - name: Configure Ingress Routing
+      - name: Configure ingress routing for services
         run: |
           cat <<EOF | kubectl apply -f -
           apiVersion: networking.k8s.io/v1
@@ -177,7 +177,7 @@ jobs:
                             number: 80
           EOF
 
-      - name: Wait for Deployments to be Ready
+      - name: Wait for deployments
         run: |
           kubectl wait --for=condition=available --timeout=120s deployment/http-echo-foo
           kubectl wait --for=condition=available --timeout=120s deployment/http-echo-bar
@@ -192,18 +192,18 @@ jobs:
           chmod +x hey
           sudo mv hey /usr/local/bin/hey
 
-      - name: Test Connectivity
+      - name: Test connectivity
         run: |
           sleep 10
           curl -v -H "Host: foo.localhost" http://localhost:8080/
           curl -v -H "Host: bar.localhost" http://localhost:8080/
 
-      - name: Generate Load Test and Capture Results
+      - name: Generate load tests and capture results
         run: |
           hey -z 30s -q 10 -host foo.localhost http://localhost:8080/ > foo_load_test.txt
           hey -z 30s -q 10 -host bar.localhost http://localhost:8080/ > bar_load_test.txt
 
-      - name: Parse Load Test Results
+      - name: Parse load test results
         run: |
           parse_results() {
             file=$1
@@ -235,7 +235,7 @@ jobs:
           parse_results foo_load_test.txt parsed_foo.txt
           parse_results bar_load_test.txt parsed_bar.txt
 
-      - name: Comment Load Testing Results on PR
+      - name: Post load test results comment on PR
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -266,6 +266,6 @@ jobs:
               body: pr_comment,
             });
 
-      - name: Delete KinD Cluster
+      - name: Delete cluster
         if: always()
         run: kind delete cluster --name test-cluster
