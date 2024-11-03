@@ -186,7 +186,7 @@ jobs:
         run: |
           echo "127.0.0.1 foo.localhost bar.localhost" | sudo tee -a /etc/hosts
 
-      - name: Install Hey for Load Testing
+      - name: Install Hey
         run: |
           curl -Lo hey https://hey-release.s3.us-east-2.amazonaws.com/hey_linux_amd64
           chmod +x hey
