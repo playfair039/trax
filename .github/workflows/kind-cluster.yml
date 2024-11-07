@@ -13,19 +13,25 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@v3
 
-      - name: Install kinD
+      - name: Install Dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev git
+          # Install KinD
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
-
-      - name: Install kubectl
-        run: |
+          # Install kubectl
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x ./kubectl
           sudo mv ./kubectl /usr/local/bin/kubectl
+          # Install wrk
+          git clone https://github.com/wg/wrk.git
+          cd wrk
+          make
+          sudo cp wrk /usr/local/bin/
 
-      - name: Configure cluster
+      - name: Configure Multi-Node KinD Cluster
         run: |
           cat <<EOF > kind-config.yaml
           kind: Cluster
@@ -49,13 +55,13 @@ jobs:
             - role: worker
           EOF
 
-      - name: Create cluster
+      - name: Create Multi-Node KinD Cluster
         run: kind create cluster --name test-cluster --config kind-config.yaml
 
-      - name: Verify cluster nodes
+      - name: Verify Cluster Nodes
         run: kubectl get nodes
 
-      - name: Deploy nginx ingress controller
+      - name: Deploy NGINX Ingress Controller
         run: |
           kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.1/deploy/static/provider/kind/deploy.yaml
           kubectl wait --namespace ingress-nginx \
@@ -63,200 +69,150 @@ jobs:
             --selector=app.kubernetes.io/component=controller \
             --timeout=600s
 
-      - name: Deploy HTTP echo services
+      - name: Deploy HTTP Echo Services and Configure Ingress
         run: |
-          cat <<EOF | kubectl apply -f -
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: http-echo-foo
-          spec:
-            replicas: 1
-            selector:
-              matchLabels:
-                app: http-echo-foo
-            template:
-              metadata:
-                labels:
-                  app: http-echo-foo
-              spec:
-                containers:
-                  - name: http-echo
-                    image: hashicorp/http-echo:0.2.3
-                    args:
-                      - "-text=foo"
-                    ports:
-                      - containerPort: 5678
-          ---
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: http-echo-foo-service
-          spec:
-            selector:
-              app: http-echo-foo
-            ports:
-              - protocol: TCP
-                port: 80
-                targetPort: 5678
-          EOF
-          cat <<EOF | kubectl apply -f -
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: http-echo-bar
-          spec:
-            replicas: 1
-            selector:
-              matchLabels:
-                app: http-echo-bar
-            template:
-              metadata:
-                labels:
-                  app: http-echo-bar
-              spec:
-                containers:
-                  - name: http-echo
-                    image: hashicorp/http-echo:0.2.3
-                    args:
-                      - "-text=bar"
-                    ports:
-                      - containerPort: 5678
-          ---
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: http-echo-bar-service
-          spec:
-            selector:
-              app: http-echo-bar
-            ports:
-              - protocol: TCP
-                port: 80
-                targetPort: 5678
-          EOF
+          for name in foo bar; do
+            # Deploy the service
+            cat <<EOF | kubectl apply -f -
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: http-echo-\$name
+            spec:
+              replicas: 1
+              selector:
+                matchLabels:
+                  app: http-echo-\$name
+              template:
+                metadata:
+                  labels:
+                    app: http-echo-\$name
+                spec:
+                  containers:
+                    - name: http-echo
+                      image: hashicorp/http-echo:0.2.3
+                      args:
+                        - "-text=\$name"
+                      ports:
+                        - containerPort: 5678
+            ---
+            apiVersion: v1
+            kind: Service
+            metadata:
+              name: http-echo-\$name-service
+            spec:
+              selector:
+                app: http-echo-\$name
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 5678
+            EOF
 
-      - name: Configure ingress routing for services
-        run: |
-          cat <<EOF | kubectl apply -f -
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: foo-ingress
-          spec:
-            ingressClassName: nginx
-            rules:
-              - host: foo.localhost
-                http:
-                  paths:
-                    - path: /
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: http-echo-foo-service
-                          port:
-                            number: 80
-          EOF
-          cat <<EOF | kubectl apply -f -
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: bar-ingress
-          spec:
-            ingressClassName: nginx
-            rules:
-              - host: bar.localhost
-                http:
-                  paths:
-                    - path: /
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: http-echo-bar-service
-                          port:
-                            number: 80
-          EOF
+            # Configure Ingress
+            cat <<EOF | kubectl apply -f -
+            apiVersion: networking.k8s.io/v1
+            kind: Ingress
+            metadata:
+              name: \$name-ingress
+            spec:
+              ingressClassName: nginx
+              rules:
+                - host: \$name.localhost
+                  http:
+                    paths:
+                      - path: /
+                        pathType: Prefix
+                        backend:
+                          service:
+                            name: http-echo-\$name-service
+                            port:
+                              number: 80
+            EOF
+          done
 
-      - name: Wait for deployments
+      - name: Define Retry Function
+        shell: bash
         run: |
-          kubectl wait --for=condition=available --timeout=120s deployment/http-echo-foo
-          kubectl wait --for=condition=available --timeout=120s deployment/http-echo-bar
+          echo '
+          retry() {
+            local retries=\$1
+            shift
+            local count=0
+            until "\$@"; do
+              exit=\$?
+              count=\$((count + 1))
+              if [ \$count -lt \$retries ]; then
+                echo "Retry \$count/\$retries failed, retrying in 5 seconds..."
+                sleep 5
+              else
+                echo "Retry \$count/\$retries failed, no more retries left."
+                return \$exit
+              fi
+            done
+            return 0
+          }
+          ' >> \$BASH_ENV
+
+      - name: Wait for Deployments to be Ready
+        run: |
+          source \$BASH_ENV
+          for name in foo bar; do
+            retry 5 kubectl wait --for=condition=available --timeout=60s deployment/http-echo-\$name
+          done
 
       - name: Update /etc/hosts
         run: |
           echo "127.0.0.1 foo.localhost bar.localhost" | sudo tee -a /etc/hosts
 
-      - name: Install Hey
+      - name: Test Connectivity
         run: |
-          curl -Lo hey https://hey-release.s3.us-east-2.amazonaws.com/hey_linux_amd64
-          chmod +x hey
-          sudo mv hey /usr/local/bin/hey
-
-      - name: Test connectivity
-        run: |
+          source \$BASH_ENV
           sleep 10
-          curl -v -H "Host: foo.localhost" http://localhost:8080/
-          curl -v -H "Host: bar.localhost" http://localhost:8080/
+          for name in foo bar; do
+            retry 5 curl -v -H "Host: \$name.localhost" http://localhost:8080/
+          done
 
-      - name: Generate load tests and capture results
+      - name: Create wrk Lua Script
         run: |
-          hey -z 30s -q 10 -host foo.localhost http://localhost:8080/ > foo_load_test.txt
-          hey -z 30s -q 10 -host bar.localhost http://localhost:8080/ > bar_load_test.txt
+          cat <<'EOF' > script.lua
+          wrk.method = "GET"
+          hosts = {"foo.localhost", "bar.localhost"}
+          request = function()
+            host = hosts[math.random(1, #hosts)]
+            wrk.headers["Host"] = host
+            return wrk.format(nil, "/")
+          end
+          EOF
 
-      - name: Parse load test results
+      - name: Generate Randomized Load Test and Capture Results
         run: |
-          parse_results() {
-            file=$1
-            output_file=$2
-            echo "Results for $file" > $output_file
-            avg_latency=$(grep '^Latency' $file | awk '{print $2}')
-            requests_sec=$(grep 'Requests/sec' $file | awk '{print $2}')
-            percent_90=$(grep '  90%' $file | awk '{print $2}')
-            percent_95=$(grep '  95%' $file | awk '{print $2}')
-            total_requests=$(grep '^Total:' $file | awk '{print $2}')
-            failed_requests=$(grep 'Failed requests:' $file | awk '{print $3}')
-            if [ -z "$failed_requests" ]; then
-              failed_requests=0
-            fi
-            if [ -z "$total_requests" ]; then
-              total_requests=0
-            fi
-            if [ "$total_requests" -eq 0 ]; then
-              failed_percent=0
-            else
-              failed_percent=$(echo "scale=2; $failed_requests/$total_requests*100" | bc)
-            fi
-            echo "Average Latency: $avg_latency" >> $output_file
-            echo "Requests/sec: $requests_sec" >> $output_file
-            echo "90th Percentile Latency: $percent_90" >> $output_file
-            echo "95th Percentile Latency: $percent_95" >> $output_file
-            echo "Failed Requests: $failed_requests ($failed_percent%)" >> $output_file
-          }
-          parse_results foo_load_test.txt parsed_foo.txt
-          parse_results bar_load_test.txt parsed_bar.txt
+          wrk -t4 -c10 -d30s -s script.lua http://localhost:8080/ > load_test.txt
 
-      - name: Post load test results comment on PR
+      - name: Parse Load Test Results
+        run: |
+          avg_latency=$(grep 'Latency' load_test.txt | awk '{print $2}')
+          requests_sec=$(grep 'Requests/sec' load_test.txt | awk '{print $2}')
+          errors=$(grep 'Socket errors' load_test.txt)
+          echo "Average Latency: \$avg_latency" > parsed_results.txt
+          echo "Requests/sec: \$requests_sec" >> parsed_results.txt
+          echo "\$errors" >> parsed_results.txt
+
+      - name: Comment Load Testing Results on PR
         uses: actions/github-script@v6
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: \${{ secrets.GITHUB_TOKEN }}
           script: |
             const pr_number = context.issue.number;
             const fs = require('fs');
-            const parsed_foo = fs.readFileSync('parsed_foo.txt', 'utf8');
-            const parsed_bar = fs.readFileSync('parsed_bar.txt', 'utf8');
+            const parsed_results = fs.readFileSync('parsed_results.txt', 'utf8');
             const pr_comment = [
               '### Load Testing Results',
               '',
-              '#### foo.localhost:',
+              '#### Randomized Traffic between foo.localhost and bar.localhost:',
               '',
               '```',
-              parsed_foo,
-              '```',
-              '',
-              '#### bar.localhost:',
-              '',
-              '```',
-              parsed_bar,
+              parsed_results,
               '```',
             ].join('\n');
             await github.rest.issues.createComment({
@@ -266,6 +222,6 @@ jobs:
               body: pr_comment,
             });
 
-      - name: Delete cluster
+      - name: Delete KinD Cluster
         if: always()
         run: kind delete cluster --name test-cluster
