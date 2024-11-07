@@ -74,61 +74,61 @@ jobs:
           for name in foo bar; do
             # Deploy the service
             cat <<EOF | kubectl apply -f -
-            apiVersion: apps/v1
-            kind: Deployment
-            metadata:
-              name: http-echo-\$name
-            spec:
-              replicas: 1
-              selector:
-                matchLabels:
-                  app: http-echo-\$name
-              template:
-                metadata:
-                  labels:
-                    app: http-echo-\$name
-                spec:
-                  containers:
-                    - name: http-echo
-                      image: hashicorp/http-echo:0.2.3
-                      args:
-                        - "-text=\$name"
-                      ports:
-                        - containerPort: 5678
-            ---
-            apiVersion: v1
-            kind: Service
-            metadata:
-              name: http-echo-\$name-service
-            spec:
-              selector:
-                app: http-echo-\$name
-              ports:
-                - protocol: TCP
-                  port: 80
-                  targetPort: 5678
-            EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: http-echo-$name
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: http-echo-$name
+  template:
+    metadata:
+      labels:
+        app: http-echo-$name
+    spec:
+      containers:
+        - name: http-echo
+          image: hashicorp/http-echo:0.2.3
+          args:
+            - "-text=$name"
+          ports:
+            - containerPort: 5678
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: http-echo-$name-service
+spec:
+  selector:
+    app: http-echo-$name
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 5678
+EOF
 
             # Configure Ingress
             cat <<EOF | kubectl apply -f -
-            apiVersion: networking.k8s.io/v1
-            kind: Ingress
-            metadata:
-              name: \$name-ingress
-            spec:
-              ingressClassName: nginx
-              rules:
-                - host: \$name.localhost
-                  http:
-                    paths:
-                      - path: /
-                        pathType: Prefix
-                        backend:
-                          service:
-                            name: http-echo-\$name-service
-                            port:
-                              number: 80
-            EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: $name-ingress
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: $name.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: http-echo-$name-service
+                port:
+                  number: 80
+EOF
           done
 
       - name: Define Retry Function
@@ -136,29 +136,29 @@ jobs:
         run: |
           echo '
           retry() {
-            local retries=\$1
+            local retries=$1
             shift
             local count=0
-            until "\$@"; do
-              exit=\$?
-              count=\$((count + 1))
-              if [ \$count -lt \$retries ]; then
-                echo "Retry \$count/\$retries failed, retrying in 5 seconds..."
+            until "$@"; do
+              exit=$?
+              count=$((count + 1))
+              if [ $count -lt $retries ]; then
+                echo "Retry $count/$retries failed, retrying in 5 seconds..."
                 sleep 5
               else
-                echo "Retry \$count/\$retries failed, no more retries left."
-                return \$exit
+                echo "Retry $count/$retries failed, no more retries left."
+                return $exit
               fi
             done
             return 0
           }
-          ' >> \$BASH_ENV
+          ' >> $BASH_ENV
 
       - name: Wait for Deployments to be Ready
         run: |
-          source \$BASH_ENV
+          source $BASH_ENV
           for name in foo bar; do
-            retry 5 kubectl wait --for=condition=available --timeout=60s deployment/http-echo-\$name
+            retry 5 kubectl wait --for=condition=available --timeout=60s deployment/http-echo-$name
           done
 
       - name: Update /etc/hosts
@@ -167,10 +167,10 @@ jobs:
 
       - name: Test Connectivity
         run: |
-          source \$BASH_ENV
+          source $BASH_ENV
           sleep 10
           for name in foo bar; do
-            retry 5 curl -v -H "Host: \$name.localhost" http://localhost:8080/
+            retry 5 curl -v -H "Host: $name.localhost" http://localhost:8080/
           done
 
       - name: Create wrk Lua Script
@@ -183,7 +183,7 @@ jobs:
             wrk.headers["Host"] = host
             return wrk.format(nil, "/")
           end
-          EOF
+EOF
 
       - name: Generate Randomized Load Test and Capture Results
         run: |
@@ -194,14 +194,14 @@ jobs:
           avg_latency=$(grep 'Latency' load_test.txt | awk '{print $2}')
           requests_sec=$(grep 'Requests/sec' load_test.txt | awk '{print $2}')
           errors=$(grep 'Socket errors' load_test.txt)
-          echo "Average Latency: \$avg_latency" > parsed_results.txt
-          echo "Requests/sec: \$requests_sec" >> parsed_results.txt
-          echo "\$errors" >> parsed_results.txt
+          echo "Average Latency: $avg_latency" > parsed_results.txt
+          echo "Requests/sec: $requests_sec" >> parsed_results.txt
+          echo "$errors" >> parsed_results.txt
 
       - name: Comment Load Testing Results on PR
         uses: actions/github-script@v6
         with:
-          github-token: \${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const pr_number = context.issue.number;
             const fs = require('fs');
